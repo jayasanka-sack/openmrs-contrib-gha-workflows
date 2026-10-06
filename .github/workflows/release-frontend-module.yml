@@ -192,6 +192,18 @@ jobs:
         env:
           PRERELEASE_VERSION: ${{ steps.version.outputs.version }}
 
+      - name: 📋 List publishable packages
+        id: packages
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          names=$(yarn workspaces list --json --no-private \
+            | jq -r '.location + "/package.json"' \
+            | xargs jq -r --arg v "$VERSION" 'select(.version == $v) | .name' \
+            | tr '\n' ' ')
+          echo "Publishable packages: $names"
+          echo "names=$names" >> "$GITHUB_OUTPUT"
+
       - name: 🏗️ Run build
         run: ${{ steps.params.outputs.build_command }}
 
