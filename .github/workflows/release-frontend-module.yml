@@ -447,12 +447,41 @@ jobs:
             echo "::error::New version $NEW is not greater than current version $OLD"
             exit 1
           fi
-          echo "version=$NEW" >> "$GITHUB_OUTPUT"
+          {
+            echo "version=$NEW"
+            echo "old_major=${OLD%%.*}"
+            echo "new_major=${NEW%%.*}"
+          } >> "$GITHUB_OUTPUT"
           {
             echo "### Release Parameters 🚀"
             echo "- **Release Type:** \`$RELEASE_TYPE\`"
             echo "- **Version:** \`$OLD\` → \`$NEW\`"
           } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: 🔗 Bump internal peer ranges for major release
+        if: ${{ !inputs.publish_only && steps.bump.outputs.old_major != steps.bump.outputs.new_major }}
+        env:
+          NEW_MAJOR: ${{ steps.bump.outputs.new_major }}
+        run: |
+          node -e '
+            const fs = require("fs"), cp = require("child_process");
+            const target = `${process.env.NEW_MAJOR}.x`;
+            const ws = cp.execSync("yarn workspaces list --json").toString().trim().split("\n").map(JSON.parse);
+            const pkgs = ws.map(w => { const file = `${w.location}/package.json`; return { file, json: JSON.parse(fs.readFileSync(file, "utf8")) }; });
+            const names = new Set(pkgs.map(p => p.json.name));
+            for (const p of pkgs) {
+              let changed = false;
+              for (const [dep, range] of Object.entries(p.json.peerDependencies ?? {})) {
+                if (names.has(dep) && /^\d+\.x$/.test(range) && range !== target) {
+                  console.log(`${p.json.name}: ${dep} ${range} -> ${target}`);
+                  p.json.peerDependencies[dep] = target;
+                  changed = true;
+                }
+              }
+              if (changed) fs.writeFileSync(p.file, JSON.stringify(p.json, null, 2) + "\n");
+            }
+          '
+          yarn install --mode=update-lockfile
 
       # The one place the effective version is settled: the bump's result
       # normally, or the input naming the existing tag in publish-only mode.
