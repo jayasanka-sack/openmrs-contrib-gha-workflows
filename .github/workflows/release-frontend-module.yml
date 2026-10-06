@@ -463,24 +463,7 @@ jobs:
         env:
           NEW_MAJOR: ${{ steps.bump.outputs.new_major }}
         run: |
-          node -e '
-            const fs = require("fs"), cp = require("child_process");
-            const target = `${process.env.NEW_MAJOR}.x`;
-            const ws = cp.execSync("yarn workspaces list --json").toString().trim().split("\n").map(JSON.parse);
-            const pkgs = ws.map(w => { const file = `${w.location}/package.json`; return { file, json: JSON.parse(fs.readFileSync(file, "utf8")) }; });
-            const names = new Set(pkgs.map(p => p.json.name));
-            for (const p of pkgs) {
-              let changed = false;
-              for (const [dep, range] of Object.entries(p.json.peerDependencies ?? {})) {
-                if (names.has(dep) && /^\d+\.x$/.test(range) && range !== target) {
-                  console.log(`${p.json.name}: ${dep} ${range} -> ${target}`);
-                  p.json.peerDependencies[dep] = target;
-                  changed = true;
-                }
-              }
-              if (changed) fs.writeFileSync(p.file, JSON.stringify(p.json, null, 2) + "\n");
-            }
-          '
+          python3 .gha-workflows/.github/scripts/bump_internal_peer_ranges.py
           yarn install --mode=update-lockfile
 
       # The one place the effective version is settled: the bump's result
@@ -580,94 +563,7 @@ jobs:
           BRANCH: ${{ steps.branch.outputs.name }}
           PUBLISH_ONLY: ${{ inputs.publish_only }}
           PUSHED: ${{ steps.push.outcome == 'success' }}
-        run: |
-          {
-            echo
-            echo "### ❌ Release failed — current state"
-            echo
-          } >> "$GITHUB_STEP_SUMMARY"
-
-          if [ -z "$RELEASE_TAG" ]; then
-            echo "Failed before a release tag was computed. Nothing was committed, pushed or published — fix the error above and re-run." >> "$GITHUB_STEP_SUMMARY"
-            exit 0
-          fi
-
-          # PUSHED is this run's own push outcome, not a probe of the remote: a
-          # tag being on the remote says nothing about who put it there, and
-          # publish-only always reuses one that was already pushed.
-          if [ "$PUBLISH_ONLY" != "true" ] && [ "$PUSHED" != "true" ]; then
-            {
-              echo "- **Tag \`$RELEASE_TAG\`:** not pushed"
-              echo "- **npm:** nothing published"
-              echo
-              echo "Nothing left the runner, so \`$RELEASE_VERSION\` is still free. Fix the error above and re-run."
-            } >> "$GITHUB_STEP_SUMMARY"
-            exit 0
-          fi
-
-          # Either this run pushed the tag, or publish-only reused an existing
-          # one. Both mean the failure came at or after publish, so work out how
-          # far the publish got.
-          LIVE=$(mktemp)
-          MISSING=$(mktemp)
-          # Drop the root workspace when there are others: the inferred publish
-          # command excludes it by name (--exclude <root>), and --no-private
-          # keeps it whenever the root isn't marked private. Without this the
-          # report lists a root that was never meant to be published. A repo
-          # whose only workspace IS the root is a single-package repo, and there
-          # the root is the thing being published, so keep it.
-          PKGS=$(yarn workspaces list --json --no-private 2>/dev/null \
-            | jq -rs 'if length > 1 then map(select(.location != ".")) else . end | .[].name' 2>/dev/null \
-            || true)
-          for PKG in $PKGS; do
-            if [ "$(npm view "${PKG}@${RELEASE_VERSION}" version 2>/dev/null)" = "$RELEASE_VERSION" ]; then
-              echo "  - \`${PKG}\`" >> "$LIVE"
-            else
-              echo "  - \`${PKG}\`" >> "$MISSING"
-            fi
-          done
-
-          {
-            if [ "$PUBLISH_ONLY" = "true" ]; then
-              echo "- **Tag \`$RELEASE_TAG\`:** pre-existing — this run committed and pushed nothing"
-            else
-              echo "- **Tag \`$RELEASE_TAG\`:** pushed to \`$BRANCH\` — commit and tag are live"
-            fi
-            if [ -s "$LIVE" ]; then
-              echo "- **npm — already published at \`$RELEASE_VERSION\`:**"
-              cat "$LIVE"
-            else
-              echo "- **npm:** nothing published at \`$RELEASE_VERSION\`"
-            fi
-            # Only worth naming when the publish got partway; if nothing
-            # published, the line above already says so.
-            if [ -s "$LIVE" ] && [ -s "$MISSING" ]; then
-              echo "- **npm — NOT published:**"
-              cat "$MISSING"
-            fi
-            echo
-            echo "#### Recovery"
-            echo
-            if [ -s "$LIVE" ]; then
-              echo "⚠️ Some packages are already on npm at \`$RELEASE_VERSION\`, and **npm versions cannot be republished or reused**. Do not re-run this workflow at \`$RELEASE_VERSION\`, and do not delete the tag — it matches what is on npm."
-              echo
-              echo "Re-running with **publish_only** and \`release_version: $RELEASE_VERSION\` is safe here: the already-published packages fail with EPUBLISHCONFLICT, so use it only if your publish command tolerates that. Otherwise publish the missing packages by hand at the same version, or leave \`$RELEASE_VERSION\` partial and cut the next version."
-            elif [ "$PUBLISH_ONLY" = "true" ]; then
-              echo "Nothing reached npm and the tag is untouched. Fix the error above and re-run with **publish_only** and \`release_version: $RELEASE_VERSION\`."
-            else
-              echo "Nothing reached npm, so \`$RELEASE_VERSION\` is still free. The tag and commit are already pushed, so pick one:"
-              echo
-              echo "1. **Finish this release** — re-run with **publish_only** and \`release_version: $RELEASE_VERSION\`. It builds and publishes the existing tag; no second bump or commit."
-              echo "2. **Start over** — remove the tag and the release commit, then release again:"
-              echo
-              echo '```bash'
-              echo "git push origin :refs/tags/$RELEASE_TAG"
-              echo "git revert --no-edit $RELEASE_TAG^{commit}"
-              echo '```'
-            fi
-            echo
-            echo "No GitHub Release was created: that job is skipped when this one fails."
-          } >> "$GITHUB_STEP_SUMMARY"
+        run: python3 .gha-workflows/.github/scripts/report_release_state.py
 
   github_release:
     name: Create GitHub Release
