@@ -49,7 +49,7 @@ class TestNotPushed(unittest.TestCase):
 
 class TestTagLive(unittest.TestCase):
     def test_normal_run_names_the_branch(self):
-        self.assertIn(f"pushed to `main`", render())
+        self.assertIn("pushed to `main`", render())
 
     def test_publish_only_does_not_claim_to_have_pushed(self):
         out = render(publish_only=True, pushed=False)
