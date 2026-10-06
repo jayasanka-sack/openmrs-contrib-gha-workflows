@@ -7,6 +7,7 @@ import tempfile
 import textwrap
 import unittest
 import xml.etree.ElementTree as ET
+from unittest.mock import patch
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "scripts"))
 import utils
@@ -152,3 +153,74 @@ class TestWriteGithubOutputs(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestYarnWorkspaces(unittest.TestCase):
+    """yarn is the authority on which workspaces exist."""
+
+    def _result(self, stdout):
+        class R:
+            pass
+
+        r = R()
+        r.stdout = stdout
+        return r
+
+    def test_parses_ndjson(self):
+        out = '{"location":".","name":"@o/root"}\n{"location":"packages/a","name":"@o/a"}\n'
+        with patch.object(utils.subprocess, "run", return_value=self._result(out)):
+            self.assertEqual(
+                utils.yarn_workspaces(),
+                [
+                    {"location": ".", "name": "@o/root"},
+                    {"location": "packages/a", "name": "@o/a"},
+                ],
+            )
+
+    def test_skips_blank_and_malformed_lines(self):
+        out = '{"location":"packages/a"}\n\nnot json\n'
+        with patch.object(utils.subprocess, "run", return_value=self._result(out)):
+            self.assertEqual(utils.yarn_workspaces(), [{"location": "packages/a"}])
+
+    def test_passes_extra_args_through(self):
+        with patch.object(
+            utils.subprocess, "run", return_value=self._result("")
+        ) as run:
+            utils.yarn_workspaces(("--no-private",))
+        self.assertIn("--no-private", run.call_args[0][0])
+
+    def test_degrades_to_empty_when_yarn_is_missing(self):
+        with patch.object(utils.subprocess, "run", side_effect=OSError("no yarn")):
+            self.assertEqual(utils.yarn_workspaces(), [])
+
+    def test_degrades_to_empty_when_yarn_fails(self):
+        err = utils.subprocess.CalledProcessError(1, "yarn")
+        with patch.object(utils.subprocess, "run", side_effect=err):
+            self.assertEqual(utils.yarn_workspaces(), [])
+
+
+class TestPublishablePackageNames(unittest.TestCase):
+    """The root is excluded by the publish command, so the report must match."""
+
+    def test_drops_root_when_other_workspaces_exist(self):
+        ws = [
+            {"location": ".", "name": "@o/root"},
+            {"location": "packages/a", "name": "@o/a"},
+            {"location": "packages/b", "name": "@o/b"},
+        ]
+        self.assertEqual(utils.publishable_package_names(ws), ["@o/a", "@o/b"])
+
+    def test_keeps_root_for_a_single_package_repo(self):
+        ws = [{"location": ".", "name": "@o/solo"}]
+        self.assertEqual(utils.publishable_package_names(ws), ["@o/solo"])
+
+    def test_private_root_already_filtered_by_yarn(self):
+        ws = [{"location": "packages/a", "name": "@o/a"}]
+        self.assertEqual(utils.publishable_package_names(ws), ["@o/a"])
+
+    def test_ignores_entries_without_a_name(self):
+        ws = [{"location": "packages/a"}, {"location": "packages/b", "name": "@o/b"}]
+        self.assertEqual(utils.publishable_package_names(ws), ["@o/b"])
+
+    def test_empty_input(self):
+        self.assertEqual(utils.publishable_package_names([]), [])
